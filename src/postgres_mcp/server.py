@@ -20,6 +20,7 @@ from pydantic import validate_call
 from postgres_mcp.index.dta_calc import DatabaseTuningAdvisor
 
 from .artifacts import ErrorResult
+from .formatter import format_to_excel
 from .artifacts import ExplainPlanArtifact
 from .database_health import DatabaseHealthTool
 from .database_health import HealthType
@@ -551,6 +552,38 @@ async def get_top_queries(
         return format_text_response(result)
     except Exception as e:
         logger.error(f"Error getting slow queries: {e}")
+        return format_error_response(str(e))
+
+
+@mcp.tool(
+    description="Executes a SQL query and exports results to an Excel (.xlsx) file. "
+    "Use this when the user wants to save query results as a spreadsheet.",
+    annotations=ToolAnnotations(
+        title="Execute SQL to Excel",
+        readOnlyHint=True,
+    ),
+)
+async def execute_sql_xlsx(
+    sql: str = Field(description="SQL query to execute and export to Excel"),
+) -> ResponseType:
+    """Executes a SQL query and exports results to an Excel file."""
+    try:
+        sql_driver = await get_sql_driver()
+        rows = await sql_driver.execute_query(sql)  # type: ignore
+        if rows is None or len(rows) == 0:
+            return format_error_response("Query returned no results")
+
+        row_dicts = [r.cells for r in rows]
+        columns = list(row_dicts[0].keys())
+        file_path = format_to_excel(rows=row_dicts, columns=columns)
+
+        return format_text_response(
+            f"Excel file created: {file_path}\n"
+            f"Rows: {len(row_dicts)}\n"
+            f"Columns: {', '.join(columns)}"
+        )
+    except Exception as e:
+        logger.error(f"Error executing query for Excel export: {e}")
         return format_error_response(str(e))
 
 

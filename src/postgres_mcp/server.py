@@ -21,6 +21,7 @@ from postgres_mcp.index.dta_calc import DatabaseTuningAdvisor
 
 from .artifacts import ErrorResult
 from .formatter import format_to_excel
+from .nl_to_sql import nl_to_sql
 from .artifacts import ExplainPlanArtifact
 from .database_health import DatabaseHealthTool
 from .database_health import HealthType
@@ -584,6 +585,76 @@ async def execute_sql_xlsx(
         )
     except Exception as e:
         logger.error(f"Error executing query for Excel export: {e}")
+        return format_error_response(str(e))
+
+
+@mcp.tool(
+    description="Convert natural language query to SQL. Use this to generate a SQL statement from a plain English description. "
+    "The SQL is validated for safety (SELECT-only) and returned for review before execution.",
+    annotations=ToolAnnotations(
+        title="Natural Language to SQL",
+        readOnlyHint=True,
+    ),
+)
+async def nl_to_sql_tool(
+    query: str = Field(description="Natural language query (e.g., '查看用户表有多少条', 'Find orders over $1000')"),
+    table_context: str = Field(
+        description="Optional table schema context to help generate accurate SQL (e.g., 'users: id, name, email, created_at\\norders: id, user_id, amount, created_at')",
+        default="",
+    ),
+) -> ResponseType:
+    """Convert natural language to SQL (for review before execution)."""
+    try:
+        result = await nl_to_sql(query, table_context if table_context else None)
+
+        if not result.success:
+            return format_error_response(result.error or "Conversion failed")
+
+        response_text = f"Generated SQL:\n{result.sql}"
+        if result.warning:
+            response_text += f"\n\nWarning: {result.warning}"
+        if result.error:
+            response_text += f"\n\nError: {result.error}"
+
+        return format_text_response(response_text)
+    except Exception as e:
+        logger.error(f"Error in nl_to_sql_tool: {e}")
+        return format_error_response(str(e))
+
+
+@mcp.tool(
+    description="Convert natural language query to SQL and execute it, returning results as JSON. "
+    "Use this for direct execution when you trust the query. For untrusted input, use nl_to_sql first to review.",
+    annotations=ToolAnnotations(
+        title="Natural Language Query",
+        readOnlyHint=True,
+    ),
+)
+async def nl_query(
+    query: str = Field(description="Natural language query"),
+    table_context: str = Field(
+        description="Optional table schema context",
+        default="",
+    ),
+) -> ResponseType:
+    """Convert natural language to SQL and execute it."""
+    try:
+        # First convert NL to SQL
+        result = await nl_to_sql(query, table_context if table_context else None)
+
+        if not result.success:
+            return format_error_response(result.error or "Failed to generate SQL")
+
+        # Execute the generated SQL
+        sql_driver = await get_sql_driver()
+        rows = await sql_driver.execute_query(result.sql)  # type: ignore
+
+        if rows is None:
+            return format_text_response("Query returned no results")
+
+        return format_text_response(list([r.cells for r in rows]))
+    except Exception as e:
+        logger.error(f"Error in nl_query: {e}")
         return format_error_response(str(e))
 
 
